@@ -1,0 +1,29 @@
+[package]
+name = "simple-batched-threshold-encryption"
+version = "0.1.0"
+edition = "2021"
+author = "Guru Vamsi Policharla"
+
+[dependencies]
+ark-std = { version = "0.5.0" }
+ark-ec = { version = "0.5.0" }
+ark-ff = { version = "0.5.0" }
+ark-poly = { version = "0.5.0" }
+ark-bls12-381 = { version = "0.5.0" }
+ark-serialize = { version = "0.5.0" }
+rand = { version = "0.9.1" }
+merlin = "3.0.0"
+
+[dev-dependencies]
+criterion = { version = "0.5.0", features = ["html_reports"] }
+
+[features]
+asm = ["ark-ff/asm"]
+default = ["asm"]
+
+[[bench]]
+name = "bte_bench"
+harness = false
+
+[profile.dev]
+opt-level = 3
