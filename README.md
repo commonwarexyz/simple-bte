@@ -1,10 +1,8 @@
 # A Simple Batched Threshold Encryption Scheme
 
-A Rust implementation of [A Simple Batched Threshold Encryption Scheme](https://eprint.iacr.org/2026/XXX).
+A Rust implementation of [A Simple Batched Threshold Encryption Scheme](bte-paper.pdf).
 
 ## Usage
-
-Run the full benchmark suite with [Criterion](https://github.com/bheisler/criterion.rs):
 
 ```bash
 cargo bench
