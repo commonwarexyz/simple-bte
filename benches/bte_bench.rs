@@ -5,7 +5,7 @@ use ark_std::{test_rng, UniformRand};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use simple_batched_threshold_encryption::bte::{
     crs::setup,
-    decryption::{combine, decrypt, decrypt_fft, partial_decrypt, verify},
+    decryption::{combine, decrypt_fft, partial_decrypt, verify},
     encryption::encrypt,
     Ciphertext, DecryptionKey, EncryptionKey, PartialDecryption, SecretKey,
 };
@@ -58,25 +58,10 @@ fn make_context(batch_size: usize, num_parties: usize, threshold: usize) -> Benc
     }
 }
 
-fn bench_setup(c: &mut Criterion) {
-    let mut group = c.benchmark_group("setup");
-    group.sample_size(10);
-    let mut rng = test_rng();
-
-    for &b in &[8, 16, 32, 64, 128] {
-        let n = 8;
-        let t = 5;
-        group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, &b| {
-            bench.iter(|| setup::<E>(b, n, t, &mut rng));
-        });
-    }
-    group.finish();
-}
-
 fn bench_encrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("encrypt");
     group.sample_size(10);
-    let ctx = make_context(8, 8, 5);
+    let ctx = make_context(8, 100, 50);
     let mut rng = test_rng();
 
     group.bench_function("single_ct", |bench| {
@@ -89,8 +74,8 @@ fn bench_partial_decrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("partial_decrypt");
     group.sample_size(10);
 
-    for &b in &[8, 16, 32, 64, 128] {
-        let ctx = make_context(b, 8, 5);
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_context(b, 100, 50);
         group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
             let mut rng = test_rng();
             bench.iter(|| partial_decrypt(&ctx.sks[0], &ctx.cts, &mut rng).expect("valid ciphertext proofs"));
@@ -103,8 +88,8 @@ fn bench_verify(c: &mut Criterion) {
     let mut group = c.benchmark_group("verify");
     group.sample_size(10);
 
-    for &b in &[8, 16, 32, 64, 128] {
-        let ctx = make_context(b, 8, 5);
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_context(b, 100, 50);
         group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
             bench.iter(|| verify(&ctx.dk, &ctx.pds[0], &ctx.cts));
         });
@@ -116,8 +101,8 @@ fn bench_combine(c: &mut Criterion) {
     let mut group = c.benchmark_group("combine");
     group.sample_size(10);
 
-    for &b in &[8, 16, 32, 64, 128] {
-        let ctx = make_context(b, 8, 5);
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_context(b, 100, 50);
         group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
             bench.iter(|| combine::<E>(&ctx.pds));
         });
@@ -129,13 +114,13 @@ fn bench_decrypt_naive_vs_fft(c: &mut Criterion) {
     let mut group = c.benchmark_group("decrypt");
     group.sample_size(10);
 
-    for &b in &[8, 16, 32, 64, 128] {
-        let ctx = make_context(b, 8, 5);
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_context(b, 100, 50);
 
-        group.bench_with_input(BenchmarkId::new("naive", b), &b, |bench, _| {
-            let mut rng = test_rng();
-            bench.iter(|| decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
-        });
+        // group.bench_with_input(BenchmarkId::new("naive", b), &b, |bench, _| {
+        //     let mut rng = test_rng();
+        //     bench.iter(|| decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
+        // });
 
         group.bench_with_input(BenchmarkId::new("fft", b), &b, |bench, _| {
             let mut rng = test_rng();
@@ -149,7 +134,6 @@ criterion_group!(
     name = benches;
     config = Criterion::default().measurement_time(Duration::from_secs(5));
     targets =
-        bench_setup,
         bench_encrypt,
         bench_partial_decrypt,
         bench_verify,
