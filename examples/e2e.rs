@@ -4,7 +4,10 @@ use ark_ec::PrimeGroup;
 use ark_std::{test_rng, UniformRand};
 use simple_batched_threshold_encryption::bte::{
     crs::setup,
-    decryption::{combine, decrypt, decrypt_fft, partial_decrypt, verify, verify_ciphertext_batch},
+    decryption::{
+        combine, decrypt, decrypt_fft, finalize_decrypt, partial_decrypt, predecrypt_fft, verify,
+        verify_ciphertext_batch,
+    },
     encryption::encrypt,
 };
 use std::env;
@@ -17,6 +20,7 @@ type Fr = <E as Pairing>::ScalarField;
 enum Mode {
     Naive,
     Fft,
+    Pipelined,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +41,8 @@ struct Timing {
     verify_shares: Duration,
     combine: Duration,
     decrypt: Duration,
+    predecrypt: Duration,
+    finalize: Duration,
 }
 
 fn main() {
@@ -83,17 +89,43 @@ fn main() {
         let pd = combine::<E>(&pds);
         let combine_time = start.elapsed();
 
-        let start = Instant::now();
-        let recovered = match config.mode {
-            Mode::Naive => decrypt(&dk, &pd, &cts, &mut rng),
-            Mode::Fft => decrypt_fft(&dk, &pd, &cts, &mut rng),
-        };
-        let decrypt_time = start.elapsed();
+        let (decrypt_time, predecrypt_time, finalize_time) = match config.mode {
+            Mode::Naive => {
+                let start = Instant::now();
+                let recovered = decrypt(&dk, &pd, &cts, &mut rng);
+                let dt = start.elapsed();
+                assert_eq!(recovered.len(), messages.len());
+                for i in 0..messages.len() {
+                    assert_eq!(recovered[i], messages[i], "decryption mismatch at {i}");
+                }
+                (dt, Duration::ZERO, Duration::ZERO)
+            }
+            Mode::Fft => {
+                let start = Instant::now();
+                let recovered = decrypt_fft(&dk, &pd, &cts, &mut rng);
+                let dt = start.elapsed();
+                assert_eq!(recovered.len(), messages.len());
+                for i in 0..messages.len() {
+                    assert_eq!(recovered[i], messages[i], "decryption mismatch at {i}");
+                }
+                (dt, Duration::ZERO, Duration::ZERO)
+            }
+            Mode::Pipelined => {
+                let start = Instant::now();
+                let cross = predecrypt_fft(&dk, &cts);
+                let predecrypt_t = start.elapsed();
 
-        assert_eq!(recovered.len(), messages.len());
-        for i in 0..messages.len() {
-            assert_eq!(recovered[i], messages[i], "decryption mismatch at {i}");
-        }
+                let start = Instant::now();
+                let recovered = finalize_decrypt(&dk, &pd, &cts, &cross);
+                let finalize_t = start.elapsed();
+
+                assert_eq!(recovered.len(), messages.len());
+                for i in 0..messages.len() {
+                    assert_eq!(recovered[i], messages[i], "decryption mismatch at {i}");
+                }
+                (predecrypt_t + finalize_t, predecrypt_t, finalize_t)
+            }
+        };
 
         aggregate.setup += setup_time;
         aggregate.encrypt += encrypt_time;
@@ -102,9 +134,12 @@ fn main() {
         aggregate.verify_shares += verify_shares_time;
         aggregate.combine += combine_time;
         aggregate.decrypt += decrypt_time;
+        aggregate.predecrypt += predecrypt_time;
+        aggregate.finalize += finalize_time;
 
         print_iteration(
             iter + 1,
+            config.mode,
             &Timing {
                 setup: setup_time,
                 encrypt: encrypt_time,
@@ -113,12 +148,14 @@ fn main() {
                 verify_shares: verify_shares_time,
                 combine: combine_time,
                 decrypt: decrypt_time,
+                predecrypt: predecrypt_time,
+                finalize: finalize_time,
             },
         );
     }
 
     let avg = average_timing(&aggregate, config.iterations as u32);
-    print_summary(&avg);
+    print_summary(config.mode, &avg);
 }
 
 fn parse_args() -> Config {
@@ -179,7 +216,8 @@ fn parse_mode_arg(value: Option<String>) -> Mode {
     {
         "naive" => Mode::Naive,
         "fft" => Mode::Fft,
-        other => panic!("invalid mode: {other} (expected 'naive' or 'fft')"),
+        "pipelined" => Mode::Pipelined,
+        other => panic!("invalid mode: {other} (expected 'naive', 'fft', or 'pipelined')"),
     }
 }
 
@@ -189,7 +227,7 @@ fn print_help_and_exit() -> ! {
     println!("  --num-parties, -n  Number of parties (default: 8)");
     println!("  --threshold, -t    Threshold (default: 5)");
     println!("  --iters, -i        Iterations (default: 1)");
-    println!("  --mode, -m         Decrypt mode: naive | fft (default: fft)");
+    println!("  --mode, -m         Decrypt mode: naive | fft | pipelined (default: fft)");
     std::process::exit(0);
 }
 
@@ -202,6 +240,8 @@ fn average_timing(total: &Timing, n: u32) -> Timing {
         verify_shares: total.verify_shares / n,
         combine: total.combine / n,
         decrypt: total.decrypt / n,
+        predecrypt: total.predecrypt / n,
+        finalize: total.finalize / n,
     }
 }
 
@@ -216,27 +256,36 @@ fn print_run_header(config: &Config) {
     println!();
 }
 
-fn print_iteration(iter: usize, timing: &Timing) {
+fn print_iteration(iter: usize, mode: Mode, timing: &Timing) {
     println!("Iteration {}", iter);
     println!("-----------");
-    print_timing_block(timing);
+    print_timing_block(mode, timing);
     println!();
 }
 
-fn print_summary(avg: &Timing) {
+fn print_summary(mode: Mode, avg: &Timing) {
     println!("Average");
     println!("-------");
-    print_timing_block(avg);
+    print_timing_block(mode, avg);
 }
 
-fn print_timing_block(timing: &Timing) {
+fn print_timing_block(mode: Mode, timing: &Timing) {
     println!("setup           {}", fmt_duration(timing.setup));
     println!("encrypt         {}", fmt_duration(timing.encrypt));
     println!("verify_cts      {}", fmt_duration(timing.verify_cts));
     println!("partial_decrypt {}", fmt_duration(timing.partial_decrypt));
     println!("verify_shares   {}", fmt_duration(timing.verify_shares));
     println!("combine         {}", fmt_duration(timing.combine));
-    println!("decrypt         {}", fmt_duration(timing.decrypt));
+    match mode {
+        Mode::Pipelined => {
+            println!("predecrypt      {}", fmt_duration(timing.predecrypt));
+            println!("finalize        {}", fmt_duration(timing.finalize));
+            println!("decrypt (total) {}", fmt_duration(timing.decrypt));
+        }
+        _ => {
+            println!("decrypt         {}", fmt_duration(timing.decrypt));
+        }
+    }
 }
 
 fn fmt_duration(duration: Duration) -> String {

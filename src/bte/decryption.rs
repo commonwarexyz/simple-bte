@@ -157,20 +157,24 @@ pub fn decrypt<E: Pairing>(
         .collect()
 }
 
-/// FFT-accelerated decryption: same result as `decrypt` but O(B log B) group
-/// operations + O(B) pairings instead of O(B^2) pairings.
-///
-/// Uses the precomputed FFT of the circular h-vector stored in `dk.fft_h`.
-pub fn decrypt_fft<E: Pairing>(
+/// Cross-terms computed during the pre-decryption phase. This intermediate
+/// result depends only on the ciphertexts and dk, not on the combined partial
+/// decryption, so it can be computed while PartialDec/Verify/Combine are still
+/// in flight.
+pub struct CrossTerms<E: Pairing> {
+    pub values: Vec<PairingOutput<E>>,
+}
+
+/// **Pre-decryption phase** (pipelineable): compute the cross-term vector C[i]
+/// using FFT convolution.  Costs O(B log B) group ops (G₁-FFT + G_T-iFFT) plus
+/// 2B pairings in the frequency domain.  Does *not* require `pd`.
+pub fn predecrypt_fft<E: Pairing>(
     dk: &DecryptionKey<E>,
-    pd: &E::G1,
     cts: &[Ciphertext<E>],
-    rng: &mut impl Rng,
-) -> Vec<PairingOutput<E>> {
+) -> CrossTerms<E> {
     let b = dk.batch_size;
     let n = dk.fft_size;
     assert_eq!(cts.len(), b);
-    assert!(verify_ciphertext_batch(cts, rng), "invalid ciphertext batch");
 
     // 1. Build a_vec = [ct_0.ct1, ..., ct_{B-1}.ct1, 0, ..., 0] in G1.
     let mut a_vec: Vec<E::G1> = cts.iter().map(|ct| ct.ct1.into_group()).collect();
@@ -180,7 +184,7 @@ pub fn decrypt_fft<E: Pairing>(
     dk.fft_domain.fft_in_place(&mut a_vec);
     let a_hat = E::G1::normalize_batch(&a_vec);
 
-    // 3. Pointwise pairing: c_hat[k] = e(a_hat[k], fft_h[k]).
+    // 3. Pointwise pairing: c_hat[k] = e(a_hat[k], fft_h[k]).  (2B pairings)
     let mut c_hat: Vec<PairingOutput<E>> = a_hat
         .iter()
         .zip(dk.fft_h.iter())
@@ -190,14 +194,45 @@ pub fn decrypt_fft<E: Pairing>(
     // 4. iFFT(c_hat) in G_T -> C[i] = cross-term for row i.
     dk.fft_domain.ifft_in_place(&mut c_hat);
 
-    // 5. z[i] = e(pd, h_{B-i}) - C[i],  m[i] = ct[i].ct2 - z[i].
+    CrossTerms { values: c_hat }
+}
+
+/// **Finalization phase**: given the combined partial decryption `pd` and the
+/// pre-computed cross-terms, recover each plaintext.  Costs B pairings + B
+/// group ops in G_T.
+pub fn finalize_decrypt<E: Pairing>(
+    dk: &DecryptionKey<E>,
+    pd: &E::G1,
+    cts: &[Ciphertext<E>],
+    cross: &CrossTerms<E>,
+) -> Vec<PairingOutput<E>> {
+    let b = dk.batch_size;
+    assert_eq!(cts.len(), b);
+
     (0..b)
         .map(|i| {
             let pd_term = E::pairing(*pd, dk.powers_of_h[b - i].clone());
-            let z_i = pd_term - c_hat[i];
+            let z_i = pd_term - cross.values[i];
             cts[i].ct2 - z_i
         })
         .collect()
+}
+
+/// FFT-accelerated decryption: same result as `decrypt` but O(B log B) group
+/// operations + O(B) pairings instead of O(B^2) pairings.
+///
+/// Equivalent to calling `predecrypt_fft` then `finalize_decrypt`.
+pub fn decrypt_fft<E: Pairing>(
+    dk: &DecryptionKey<E>,
+    pd: &E::G1,
+    cts: &[Ciphertext<E>],
+    rng: &mut impl Rng,
+) -> Vec<PairingOutput<E>> {
+    assert_eq!(cts.len(), dk.batch_size);
+    assert!(verify_ciphertext_batch(cts, rng), "invalid ciphertext batch");
+
+    let cross = predecrypt_fft(dk, cts);
+    finalize_decrypt(dk, pd, cts, &cross)
 }
 
 #[cfg(test)]
@@ -252,6 +287,13 @@ mod tests {
         let recovered_fft = decrypt_fft(&dk, &pd, &cts, &mut rng);
         for i in 0..batch_size {
             assert_eq!(recovered_fft[i], messages[i], "FFT decrypt mismatch at {i}");
+        }
+
+        // Pipelined: predecrypt_fft + finalize_decrypt.
+        let cross = predecrypt_fft(&dk, &cts);
+        let recovered_pipelined = finalize_decrypt(&dk, &pd, &cts, &cross);
+        for i in 0..batch_size {
+            assert_eq!(recovered_pipelined[i], messages[i], "pipelined decrypt mismatch at {i}");
         }
     }
 
