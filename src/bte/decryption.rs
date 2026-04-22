@@ -1,6 +1,4 @@
-use super::{
-    schnorr_challenge, Ciphertext, DecryptionKey, PartialDecryption, SecretKey,
-};
+use super::{schnorr_challenge, Ciphertext, DecryptionKey, PartialDecryption, SecretKey};
 use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
 use ark_ff::{batch_inversion, One, Zero};
@@ -9,10 +7,7 @@ use ark_std::{rand::Rng, UniformRand};
 
 /// Verify all Schnorr proofs attached to a ciphertext batch with one
 /// randomized linear-combination check.
-pub fn verify_ciphertext_batch<E: Pairing>(
-    cts: &[Ciphertext<E>],
-    rng: &mut impl Rng,
-) -> bool {
+pub fn verify_ciphertext_batch<E: Pairing>(cts: &[Ciphertext<E>], rng: &mut impl Rng) -> bool {
     if cts.is_empty() {
         return true;
     }
@@ -139,7 +134,10 @@ pub fn decrypt<E: Pairing>(
 ) -> Vec<PairingOutput<E>> {
     let b = dk.batch_size;
     assert_eq!(cts.len(), b);
-    assert!(verify_ciphertext_batch(cts, rng), "invalid ciphertext batch");
+    assert!(
+        verify_ciphertext_batch(cts, rng),
+        "invalid ciphertext batch"
+    );
 
     (0..b)
         .map(|i| {
@@ -166,12 +164,9 @@ pub struct CrossTerms<E: Pairing> {
 }
 
 /// **Pre-decryption phase** (pipelineable): compute the cross-term vector C[i]
-/// using FFT convolution.  Costs O(B log B) group ops (G₁-FFT + G_T-iFFT) plus
+/// using FFT convolution.  Costs O(B log B) group ops (G1-FFT + G_T-iFFT) plus
 /// 2B pairings in the frequency domain.  Does *not* require `pd`.
-pub fn predecrypt_fft<E: Pairing>(
-    dk: &DecryptionKey<E>,
-    cts: &[Ciphertext<E>],
-) -> CrossTerms<E> {
+pub fn predecrypt_fft<E: Pairing>(dk: &DecryptionKey<E>, cts: &[Ciphertext<E>]) -> CrossTerms<E> {
     let b = dk.batch_size;
     let n = dk.fft_size;
     assert_eq!(cts.len(), b);
@@ -229,7 +224,10 @@ pub fn decrypt_fft<E: Pairing>(
     rng: &mut impl Rng,
 ) -> Vec<PairingOutput<E>> {
     assert_eq!(cts.len(), dk.batch_size);
-    assert!(verify_ciphertext_batch(cts, rng), "invalid ciphertext batch");
+    assert!(
+        verify_ciphertext_batch(cts, rng),
+        "invalid ciphertext batch"
+    );
 
     let cross = predecrypt_fft(dk, cts);
     finalize_decrypt(dk, pd, cts, &cross)
@@ -256,10 +254,7 @@ mod tests {
         let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
 
         let messages: Vec<PairingOutput<E>> = (0..batch_size)
-            .map(|_| {
-                PairingOutput::<E>::generator()
-                    * <E as Pairing>::ScalarField::rand(&mut rng)
-            })
+            .map(|_| PairingOutput::<E>::generator() * <E as Pairing>::ScalarField::rand(&mut rng))
             .collect();
 
         let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
@@ -272,7 +267,11 @@ mod tests {
             .collect();
 
         for pd in &pds {
-            assert!(verify(&dk, pd, &cts), "verify failed for party {}", pd.party_index);
+            assert!(
+                verify(&dk, pd, &cts),
+                "verify failed for party {}",
+                pd.party_index
+            );
         }
 
         let pd = combine::<E>(&pds);
@@ -293,7 +292,10 @@ mod tests {
         let cross = predecrypt_fft(&dk, &cts);
         let recovered_pipelined = finalize_decrypt(&dk, &pd, &cts, &cross);
         for i in 0..batch_size {
-            assert_eq!(recovered_pipelined[i], messages[i], "pipelined decrypt mismatch at {i}");
+            assert_eq!(
+                recovered_pipelined[i], messages[i],
+                "pipelined decrypt mismatch at {i}"
+            );
         }
     }
 
@@ -307,10 +309,7 @@ mod tests {
         let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
 
         let messages: Vec<PairingOutput<E>> = (0..batch_size)
-            .map(|_| {
-                PairingOutput::<E>::generator()
-                    * <E as Pairing>::ScalarField::rand(&mut rng)
-            })
+            .map(|_| PairingOutput::<E>::generator() * <E as Pairing>::ScalarField::rand(&mut rng))
             .collect();
 
         let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
@@ -341,10 +340,7 @@ mod tests {
         let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
 
         let messages: Vec<PairingOutput<E>> = (0..batch_size)
-            .map(|_| {
-                PairingOutput::<E>::generator()
-                    * <E as Pairing>::ScalarField::rand(&mut rng)
-            })
+            .map(|_| PairingOutput::<E>::generator() * <E as Pairing>::ScalarField::rand(&mut rng))
             .collect();
 
         let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
@@ -366,10 +362,7 @@ mod tests {
 
         let (ek, _dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
         let messages: Vec<PairingOutput<E>> = (0..batch_size)
-            .map(|_| {
-                PairingOutput::<E>::generator()
-                    * <E as Pairing>::ScalarField::rand(&mut rng)
-            })
+            .map(|_| PairingOutput::<E>::generator() * <E as Pairing>::ScalarField::rand(&mut rng))
             .collect();
 
         let mut cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
