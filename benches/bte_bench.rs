@@ -7,8 +7,7 @@ use simple_batched_threshold_encryption::bte::{
     crs::setup,
     decryption::{combine, finalize_decrypt, partial_decrypt, predecrypt_fft, verify},
     encryption::encrypt,
-    fo,
-    Ciphertext, DecryptionKey, EncryptionKey, PartialDecryption, SecretKey,
+    fo, Ciphertext, DecryptionKey, EncryptionKey, PartialDecryption, SecretKey,
 };
 use std::time::Duration;
 
@@ -45,10 +44,11 @@ fn make_context(batch_size: usize, num_parties: usize, threshold: usize) -> Benc
 
     let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
-    assert!(simple_batched_threshold_encryption::bte::decryption::verify_ciphertext_batch(
-        &cts,
-        &mut rng,
-    ));
+    assert!(
+        simple_batched_threshold_encryption::bte::decryption::verify_ciphertext_batch(
+            &cts, &mut rng,
+        )
+    );
 
     let pds: Vec<_> = sks[..threshold]
         .iter()
@@ -89,7 +89,14 @@ fn make_fo_context(batch_size: usize, num_parties: usize, threshold: usize) -> F
     let combined_pd = fo::combine::<E>(&pds);
     let (_, hints) = fo::helper_decrypt(&dk, &combined_pd, &cts);
 
-    FoBenchContext { ek, dk, messages, cts, combined_pd, hints }
+    FoBenchContext {
+        ek,
+        dk,
+        messages,
+        cts,
+        combined_pd,
+        hints,
+    }
 }
 
 fn bench_encrypt(c: &mut Criterion) {
@@ -112,7 +119,9 @@ fn bench_partial_decrypt(c: &mut Criterion) {
         let ctx = make_context(b, 100, 50);
         group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
             let mut rng = test_rng();
-            bench.iter(|| partial_decrypt(&ctx.sks[0], &ctx.cts, &mut rng).expect("valid ciphertext proofs"));
+            bench.iter(|| {
+                partial_decrypt(&ctx.sks[0], &ctx.cts, &mut rng).expect("valid ciphertext proofs")
+            });
         });
     }
     group.finish();
@@ -216,11 +225,11 @@ criterion_group!(
     name = benches;
     config = Criterion::default().measurement_time(Duration::from_secs(5));
     targets =
-        // bench_encrypt,
-        // bench_partial_decrypt,
-        // bench_verify,
-        // bench_combine,
-        // bench_decrypt_naive_vs_fft,
+        bench_encrypt,
+        bench_partial_decrypt,
+        bench_verify,
+        bench_combine,
+        bench_decrypt_naive_vs_fft,
         bench_fo_encrypt,
         bench_fo_helper_decrypt,
         bench_fo_batch_verify,

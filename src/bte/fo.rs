@@ -275,10 +275,7 @@ pub use super::decryption::combine;
 /// Pre-compute cross-terms via FFT (pipelineable -- does **not** need `pd`).
 ///
 /// Equivalent to `decryption::predecrypt_fft` but operates on FO ciphertexts.
-pub fn predecrypt_fft<E: Pairing>(
-    dk: &DecryptionKey<E>,
-    cts: &[FoCiphertext<E>],
-) -> CrossTerms<E> {
+pub fn predecrypt_fft<E: Pairing>(dk: &DecryptionKey<E>, cts: &[FoCiphertext<E>]) -> CrossTerms<E> {
     let b = dk.batch_size;
     let n = dk.fft_size;
     assert_eq!(cts.len(), b);
@@ -337,7 +334,13 @@ pub fn helper_finalize<E: Pairing>(
         messages.push(msg);
     }
 
-    (messages, DecryptionHints { keys, pairing_values })
+    (
+        messages,
+        DecryptionHints {
+            keys,
+            pairing_values,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -437,10 +440,7 @@ mod tests {
             .map(|i| format!("message number {i}").into_bytes())
             .collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()
@@ -459,13 +459,19 @@ mod tests {
 
         let (helper_msgs, hints) = helper_decrypt(&dk, &pd, &cts);
         for i in 0..batch_size {
-            assert_eq!(helper_msgs[i], messages[i], "helper decrypt mismatch at {i}");
+            assert_eq!(
+                helper_msgs[i], messages[i],
+                "helper decrypt mismatch at {i}"
+            );
         }
 
         let verified = batch_verify(&ek, &cts, &hints, &mut rng);
         let verified_msgs = verified.expect("batch verification should succeed");
         for i in 0..batch_size {
-            assert_eq!(verified_msgs[i], messages[i], "verified message mismatch at {i}");
+            assert_eq!(
+                verified_msgs[i], messages[i],
+                "verified message mismatch at {i}"
+            );
         }
     }
 
@@ -478,14 +484,9 @@ mod tests {
 
         let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
 
-        let messages: Vec<Vec<u8>> = (0..batch_size)
-            .map(|i| vec![i as u8; 100])
-            .collect();
+        let messages: Vec<Vec<u8>> = (0..batch_size).map(|i| vec![i as u8; 100]).collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()
@@ -500,8 +501,8 @@ mod tests {
             assert_eq!(helper_msgs[i], messages[i]);
         }
 
-        let verified_msgs = batch_verify(&ek, &cts, &hints, &mut rng)
-            .expect("batch verification should succeed");
+        let verified_msgs =
+            batch_verify(&ek, &cts, &hints, &mut rng).expect("batch verification should succeed");
         for i in 0..batch_size {
             assert_eq!(verified_msgs[i], messages[i]);
         }
@@ -520,10 +521,7 @@ mod tests {
             .map(|i| format!("msg {i}").into_bytes())
             .collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()
@@ -554,10 +552,7 @@ mod tests {
             .map(|i| format!("msg {i}").into_bytes())
             .collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()
@@ -588,10 +583,7 @@ mod tests {
             .map(|i| format!("msg {i}").into_bytes())
             .collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let mut bad_pd = partial_decrypt(&sks[0], &cts);
         bad_pd.value += <E as Pairing>::G1::generator();
@@ -613,10 +605,7 @@ mod tests {
 
         let messages: Vec<Vec<u8>> = vec![vec![]; batch_size];
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()
@@ -625,8 +614,8 @@ mod tests {
         let pd = combine::<E>(&pds);
 
         let (_, hints) = helper_decrypt(&dk, &pd, &cts);
-        let verified = batch_verify(&ek, &cts, &hints, &mut rng)
-            .expect("empty messages should verify");
+        let verified =
+            batch_verify(&ek, &cts, &hints, &mut rng).expect("empty messages should verify");
         for i in 0..batch_size {
             assert!(verified[i].is_empty());
         }
@@ -641,14 +630,9 @@ mod tests {
 
         let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
 
-        let messages: Vec<Vec<u8>> = (0..batch_size)
-            .map(|i| vec![0xab; i * 50])
-            .collect();
+        let messages: Vec<Vec<u8>> = (0..batch_size).map(|i| vec![0xab; i * 50]).collect();
 
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
 
         let pds: Vec<_> = sks[..threshold]
             .iter()

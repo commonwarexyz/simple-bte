@@ -52,26 +52,26 @@ fn main() {
 
         // -- Setup --------------------------------------------------------
         let start = Instant::now();
-        let (ek, dk, sks) =
-            setup::<E>(config.batch_size, config.num_parties, config.threshold, &mut rng);
+        let (ek, dk, sks) = setup::<E>(
+            config.batch_size,
+            config.num_parties,
+            config.threshold,
+            &mut rng,
+        );
         let setup_time = start.elapsed();
 
         // -- Encrypt ------------------------------------------------------
         let messages: Vec<Vec<u8>> = (0..config.batch_size)
             .map(|i| {
                 let mut msg = vec![0u8; config.msg_len];
-                msg[..8.min(config.msg_len)].copy_from_slice(
-                    &(i as u64).to_le_bytes()[..8.min(config.msg_len)],
-                );
+                msg[..8.min(config.msg_len)]
+                    .copy_from_slice(&(i as u64).to_le_bytes()[..8.min(config.msg_len)]);
                 msg
             })
             .collect();
 
         let start = Instant::now();
-        let cts: Vec<_> = messages
-            .iter()
-            .map(|m| encrypt(&ek, m, &mut rng))
-            .collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
         let encrypt_time = start.elapsed();
 
         // -- Partial decrypt (per validator) ------------------------------
@@ -120,7 +120,10 @@ fn main() {
             };
 
         for i in 0..config.batch_size {
-            assert_eq!(helper_msgs[i], messages[i], "helper decrypt mismatch at {i}");
+            assert_eq!(
+                helper_msgs[i], messages[i],
+                "helper decrypt mismatch at {i}"
+            );
         }
 
         // -- Verifier: batch verify (no pairings!) ------------------------
@@ -130,7 +133,10 @@ fn main() {
 
         let verified_msgs = verified.expect("batch verification failed");
         for i in 0..config.batch_size {
-            assert_eq!(verified_msgs[i], messages[i], "verified message mismatch at {i}");
+            assert_eq!(
+                verified_msgs[i], messages[i],
+                "verified message mismatch at {i}"
+            );
         }
 
         // -- Accumulate ---------------------------------------------------

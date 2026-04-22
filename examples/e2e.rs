@@ -55,8 +55,12 @@ fn main() {
         let mut rng = test_rng();
 
         let start = Instant::now();
-        let (ek, dk, sks) =
-            setup::<E>(config.batch_size, config.num_parties, config.threshold, &mut rng);
+        let (ek, dk, sks) = setup::<E>(
+            config.batch_size,
+            config.num_parties,
+            config.threshold,
+            &mut rng,
+        );
         let setup_time = start.elapsed();
 
         let messages: Vec<PairingOutput<E>> = (0..config.batch_size)
