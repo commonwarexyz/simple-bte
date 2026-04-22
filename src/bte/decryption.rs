@@ -166,7 +166,7 @@ pub struct CrossTerms<E: Pairing> {
 }
 
 /// **Pre-decryption phase** (pipelineable): compute the cross-term vector C[i]
-/// using FFT convolution.  Costs O(B log B) group ops (G₁-FFT + G_T-iFFT) plus
+/// using FFT convolution.  Costs O(B log B) group ops (G1-FFT + G_T-iFFT) plus
 /// 2B pairings in the frequency domain.  Does *not* require `pd`.
 pub fn predecrypt_fft<E: Pairing>(
     dk: &DecryptionKey<E>,

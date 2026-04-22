@@ -7,6 +7,7 @@ use merlin::Transcript;
 pub mod crs;
 pub mod decryption;
 pub mod encryption;
+pub mod fo;
 
 /// Encryption key: published for anyone to encrypt.
 #[derive(Clone, Debug)]
