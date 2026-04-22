@@ -5,7 +5,7 @@ use ark_std::{test_rng, UniformRand};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use simple_batched_threshold_encryption::bte::{
     crs::setup,
-    decryption::{combine, decrypt_fft, partial_decrypt, verify},
+    decryption::{combine, decrypt_fft, finalize_decrypt, partial_decrypt, predecrypt_fft, verify},
     encryption::encrypt,
     Ciphertext, DecryptionKey, EncryptionKey, PartialDecryption, SecretKey,
 };
@@ -125,6 +125,15 @@ fn bench_decrypt_naive_vs_fft(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("fft", b), &b, |bench, _| {
             let mut rng = test_rng();
             bench.iter(|| decrypt_fft(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
+        });
+
+        group.bench_with_input(BenchmarkId::new("predecrypt", b), &b, |bench, _| {
+            bench.iter(|| predecrypt_fft(&ctx.dk, &ctx.cts));
+        });
+
+        group.bench_with_input(BenchmarkId::new("finalize", b), &b, |bench, _| {
+            let cross = predecrypt_fft(&ctx.dk, &ctx.cts);
+            bench.iter(|| finalize_decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &cross));
         });
     }
     group.finish();
