@@ -2,6 +2,7 @@ use ark_bls12_381::Bls12_381;
 use ark_std::test_rng;
 use simple_batched_threshold_encryption::bte::{
     crs::setup,
+    fo,
     fo::{
         batch_verify, combine, encrypt, helper_decrypt, helper_finalize, partial_decrypt,
         predecrypt_fft, verify_partial_decryption,
@@ -18,6 +19,12 @@ enum Mode {
     Pipelined,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum HintMode {
+    VerificationOptimized,
+    BandwidthOptimized,
+}
+
 #[derive(Clone, Debug)]
 struct Config {
     batch_size: usize,
@@ -25,7 +32,13 @@ struct Config {
     threshold: usize,
     iterations: usize,
     mode: Mode,
+    hint_mode: HintMode,
     msg_len: usize,
+}
+
+enum Hints {
+    Verification(fo::DecryptionHints<E>),
+    Bandwidth(fo::BandwidthDecryptionHints<E>),
 }
 
 #[derive(Default)]
@@ -99,14 +112,32 @@ fn main() {
 
         // -- Helper: expensive decrypt + hint generation ------------------
         let (predecrypt_time, helper_finalize_time, helper_total_time, helper_msgs, hints) =
-            match config.mode {
-                Mode::Direct => {
+            match (config.mode, config.hint_mode) {
+                (Mode::Direct, HintMode::VerificationOptimized) => {
                     let start = Instant::now();
                     let (msgs, hints) = helper_decrypt(&dk, &pd, &cts);
                     let total = start.elapsed();
-                    (Duration::ZERO, Duration::ZERO, total, msgs, hints)
+                    (
+                        Duration::ZERO,
+                        Duration::ZERO,
+                        total,
+                        msgs,
+                        Hints::Verification(hints),
+                    )
                 }
-                Mode::Pipelined => {
+                (Mode::Direct, HintMode::BandwidthOptimized) => {
+                    let start = Instant::now();
+                    let (msgs, hints) = fo::helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+                    let total = start.elapsed();
+                    (
+                        Duration::ZERO,
+                        Duration::ZERO,
+                        total,
+                        msgs,
+                        Hints::Bandwidth(hints),
+                    )
+                }
+                (Mode::Pipelined, HintMode::VerificationOptimized) => {
                     let start = Instant::now();
                     let cross = predecrypt_fft(&dk, &cts);
                     let pre = start.elapsed();
@@ -115,7 +146,19 @@ fn main() {
                     let (msgs, hints) = helper_finalize(&dk, &pd, &cts, &cross);
                     let fin = start.elapsed();
 
-                    (pre, fin, pre + fin, msgs, hints)
+                    (pre, fin, pre + fin, msgs, Hints::Verification(hints))
+                }
+                (Mode::Pipelined, HintMode::BandwidthOptimized) => {
+                    let start = Instant::now();
+                    let cross = predecrypt_fft(&dk, &cts);
+                    let pre = start.elapsed();
+
+                    let start = Instant::now();
+                    let (msgs, hints) =
+                        fo::helper_finalize_bandwidth_optimized(&dk, &pd, &cts, &cross);
+                    let fin = start.elapsed();
+
+                    (pre, fin, pre + fin, msgs, Hints::Bandwidth(hints))
                 }
             };
 
@@ -128,7 +171,12 @@ fn main() {
 
         // -- Verifier: batch verify (no pairings!) ------------------------
         let start = Instant::now();
-        let verified = batch_verify(&ek, &cts, &hints, &mut rng);
+        let verified = match &hints {
+            Hints::Verification(hints) => batch_verify(&ek, &cts, hints, &mut rng),
+            Hints::Bandwidth(hints) => {
+                fo::batch_verify_bandwidth_optimized(&ek, &cts, hints, &mut rng)
+            }
+        };
         let batch_verify_time = start.elapsed();
 
         let verified_msgs = verified.expect("batch verification failed");
@@ -180,6 +228,7 @@ fn parse_args() -> Config {
         threshold: 5,
         iterations: 1,
         mode: Mode::Pipelined,
+        hint_mode: HintMode::VerificationOptimized,
         msg_len: 256,
     };
 
@@ -200,6 +249,9 @@ fn parse_args() -> Config {
             }
             "--mode" | "-m" => {
                 config.mode = parse_mode_arg(args.next());
+            }
+            "--hint-mode" => {
+                config.hint_mode = parse_hint_mode_arg(args.next());
             }
             "--msg-len" | "-l" => {
                 config.msg_len = parse_usize_arg("--msg-len", args.next());
@@ -239,6 +291,19 @@ fn parse_mode_arg(value: Option<String>) -> Mode {
     }
 }
 
+fn parse_hint_mode_arg(value: Option<String>) -> HintMode {
+    match value
+        .unwrap_or_else(|| panic!("missing value for --hint-mode"))
+        .as_str()
+    {
+        "verification" => HintMode::VerificationOptimized,
+        "bandwidth" => HintMode::BandwidthOptimized,
+        other => panic!(
+            "invalid hint mode: {other} (expected 'verification' or 'bandwidth')"
+        ),
+    }
+}
+
 fn print_help_and_exit() -> ! {
     println!("Usage: cargo run --release --example fo_e2e -- [options]");
     println!();
@@ -248,6 +313,7 @@ fn print_help_and_exit() -> ! {
     println!("  --threshold, -t    Threshold (default: 5)");
     println!("  --iters, -i        Iterations (default: 1)");
     println!("  --mode, -m         Helper mode: direct | pipelined (default: pipelined)");
+    println!("  --hint-mode        Hint mode: verification | bandwidth (default: verification)");
     println!("  --msg-len, -l      Per-message byte length (default: 256)");
     std::process::exit(0);
 }
@@ -279,6 +345,7 @@ fn print_run_header(config: &Config) {
     println!("msg length : {} bytes", config.msg_len);
     println!("iterations : {}", config.iterations);
     println!("mode       : {:?}", config.mode);
+    println!("hint mode  : {:?}", config.hint_mode);
     println!();
 }
 

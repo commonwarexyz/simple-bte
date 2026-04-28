@@ -31,6 +31,7 @@ struct FoBenchContext {
     cts: Vec<fo::FoCiphertext<E>>,
     combined_pd: <E as Pairing>::G1,
     hints: fo::DecryptionHints<E>,
+    bandwidth_hints: fo::BandwidthDecryptionHints<E>,
 }
 
 fn make_context(batch_size: usize, num_parties: usize, threshold: usize) -> BenchContext {
@@ -87,7 +88,10 @@ fn make_fo_context(batch_size: usize, num_parties: usize, threshold: usize) -> F
         .map(|sk| fo::partial_decrypt(sk, &cts))
         .collect();
     let combined_pd = fo::combine::<E>(&pds);
-    let (_, hints) = fo::helper_decrypt(&dk, &combined_pd, &cts);
+    let cross = fo::predecrypt_fft(&dk, &cts);
+    let (_, hints) = fo::helper_finalize(&dk, &combined_pd, &cts, &cross);
+    let (_, bandwidth_hints) =
+        fo::helper_finalize_bandwidth_optimized(&dk, &combined_pd, &cts, &cross);
 
     FoBenchContext {
         ek,
@@ -96,6 +100,7 @@ fn make_fo_context(batch_size: usize, num_parties: usize, threshold: usize) -> F
         cts,
         combined_pd,
         hints,
+        bandwidth_hints,
     }
 }
 
@@ -221,6 +226,27 @@ fn bench_fo_batch_verify(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_fo_batch_verify_bandwidth_optimized(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fo_batch_verify_bandwidth_optimized");
+    group.sample_size(10);
+
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_fo_context(b, 100, 50);
+        group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
+            let mut rng = test_rng();
+            bench.iter(|| {
+                fo::batch_verify_bandwidth_optimized(
+                    &ctx.ek,
+                    &ctx.cts,
+                    &ctx.bandwidth_hints,
+                    &mut rng,
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default().measurement_time(Duration::from_secs(5));
@@ -233,5 +259,6 @@ criterion_group!(
         bench_fo_encrypt,
         bench_fo_helper_decrypt,
         bench_fo_batch_verify,
+        bench_fo_batch_verify_bandwidth_optimized,
 );
 criterion_main!(benches);

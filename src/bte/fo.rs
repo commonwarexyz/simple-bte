@@ -195,6 +195,17 @@ pub struct DecryptionHints<E: Pairing> {
     pub pairing_values: Vec<PairingOutput<E>>,
 }
 
+/// Smaller, bandwidth-optimized hints for FO decryption verification.
+///
+/// The helper sends only the per-ciphertext FO randomness values `k_i`.
+/// Verification is more expensive because the verifier must reconstruct each
+/// pairing mask `P_i = k_i * ek`.
+#[derive(Clone, Debug)]
+pub struct BandwidthDecryptionHints<E: Pairing> {
+    /// k_i = H_R(K_i, msg_i) -- the per-ciphertext FO randomness.
+    pub randomness: Vec<E::ScalarField>,
+}
+
 // ---------------------------------------------------------------------------
 // Encryption
 // ---------------------------------------------------------------------------
@@ -312,6 +323,20 @@ pub fn helper_decrypt<E: Pairing>(
     helper_finalize(dk, pd, cts, &cross)
 }
 
+/// Perform the expensive FFT decryption and produce bandwidth-optimized hints.
+///
+/// Returns `(messages, hints)` where each hint is only the recovered FO
+/// randomness `k_i`. This saves bandwidth versus `helper_decrypt`, but pushes
+/// extra target-group work onto the verifier.
+pub fn helper_decrypt_bandwidth_optimized<E: Pairing>(
+    dk: &DecryptionKey<E>,
+    pd: &E::G1,
+    cts: &[FoCiphertext<E>],
+) -> (Vec<Vec<u8>>, BandwidthDecryptionHints<E>) {
+    let cross = predecrypt_fft(dk, cts);
+    helper_finalize_bandwidth_optimized(dk, pd, cts, &cross)
+}
+
 /// Finalize decryption given `pd` and pre-computed cross-terms.  Returns
 /// `(messages, hints)`.
 pub fn helper_finalize<E: Pairing>(
@@ -341,6 +366,31 @@ pub fn helper_finalize<E: Pairing>(
             pairing_values,
         },
     )
+}
+
+/// Finalize decryption given `pd` and pre-computed cross-terms. Returns
+/// `(messages, hints)` for the bandwidth-optimized verifier path.
+pub fn helper_finalize_bandwidth_optimized<E: Pairing>(
+    dk: &DecryptionKey<E>,
+    pd: &E::G1,
+    cts: &[FoCiphertext<E>],
+    cross: &CrossTerms<E>,
+) -> (Vec<Vec<u8>>, BandwidthDecryptionHints<E>) {
+    let b = dk.batch_size;
+    assert_eq!(cts.len(), b);
+
+    let pairing_values = recover_pairing_keys(dk, pd, cross);
+
+    let mut randomness = Vec::with_capacity(b);
+    let mut messages = Vec::with_capacity(b);
+    for i in 0..b {
+        let key = xor_16(&h_k::<E>(&pairing_values[i]), &cts[i].ct1);
+        let msg = h_m_xor(&key, &cts[i].ct2);
+        randomness.push(h_r::<E>(&key, &msg));
+        messages.push(msg);
+    }
+
+    (messages, BandwidthDecryptionHints { randomness })
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +464,57 @@ pub fn batch_verify<E: Pairing>(
     Some(messages)
 }
 
+/// Verify smaller bandwidth-optimized decryption hints and recover plaintexts.
+///
+/// Cost: one G1-MSM, B target-group scalar multiplications, O(B) hashes.
+/// **No pairings.**
+///
+/// Returns `Some(messages)` if all checks pass, `None` otherwise.
+pub fn batch_verify_bandwidth_optimized<E: Pairing>(
+    ek: &EncryptionKey<E>,
+    cts: &[FoCiphertext<E>],
+    hints: &BandwidthDecryptionHints<E>,
+    rng: &mut impl Rng,
+) -> Option<Vec<Vec<u8>>> {
+    let b = cts.len();
+    assert_eq!(hints.randomness.len(), b);
+
+    let mut messages = Vec::with_capacity(b);
+
+    // Reconstruct each pairing mask from the hinted randomness, then recover
+    // the symmetric key and plaintext locally.
+    for i in 0..b {
+        let pairing_value = ek.e * hints.randomness[i];
+        let key = xor_16(&h_k::<E>(&pairing_value), &cts[i].ct1);
+        let msg = h_m_xor(&key, &cts[i].ct2);
+        if h_r::<E>(&key, &msg) != hints.randomness[i] {
+            return None;
+        }
+        messages.push(msg);
+    }
+
+    // Sample 128-bit random challenges. Using CHALLENGE_BITS-bit scalars lets
+    // msm_small skip roughly half the Pippenger windows vs full-size scalars.
+    let mut r_bigints = Vec::with_capacity(b);
+    let mut rk_sum = E::ScalarField::zero();
+    for k_i in &hints.randomness {
+        let mut bytes = [0u8; 16];
+        rng.fill(&mut bytes);
+        let r_i = E::ScalarField::from_le_bytes_mod_order(&bytes);
+        rk_sum += r_i * *k_i;
+        r_bigints.push(r_i.into_bigint());
+    }
+
+    let g1_bases: Vec<_> = cts.iter().map(|ct| ct.ct0).collect();
+    let g1_lhs =
+        msm_small::<E::G1, E::G1Affine, E::ScalarField>(&g1_bases, &r_bigints, CHALLENGE_BITS);
+    if g1_lhs != E::G1::generator() * rk_sum {
+        return None;
+    }
+
+    Some(messages)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -423,6 +524,7 @@ mod tests {
     use super::*;
     use crate::bte::crs::setup;
     use ark_bls12_381::Bls12_381;
+    use ark_ec::CurveGroup;
     use ark_std::test_rng;
 
     type E = Bls12_381;
@@ -473,6 +575,24 @@ mod tests {
                 "verified message mismatch at {i}"
             );
         }
+
+        let (helper_msgs_bw, hints_bw) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+        for i in 0..batch_size {
+            assert_eq!(
+                helper_msgs_bw[i], messages[i],
+                "bandwidth-optimized helper decrypt mismatch at {i}"
+            );
+        }
+
+        let verified_bw = batch_verify_bandwidth_optimized(&ek, &cts, &hints_bw, &mut rng);
+        let verified_msgs_bw =
+            verified_bw.expect("bandwidth-optimized batch verification should succeed");
+        for i in 0..batch_size {
+            assert_eq!(
+                verified_msgs_bw[i], messages[i],
+                "bandwidth-optimized verified message mismatch at {i}"
+            );
+        }
     }
 
     #[test]
@@ -505,6 +625,18 @@ mod tests {
             batch_verify(&ek, &cts, &hints, &mut rng).expect("batch verification should succeed");
         for i in 0..batch_size {
             assert_eq!(verified_msgs[i], messages[i]);
+        }
+
+        let (helper_msgs_bw, hints_bw) =
+            helper_finalize_bandwidth_optimized(&dk, &pd, &cts, &cross);
+        for i in 0..batch_size {
+            assert_eq!(helper_msgs_bw[i], messages[i]);
+        }
+
+        let verified_msgs_bw = batch_verify_bandwidth_optimized(&ek, &cts, &hints_bw, &mut rng)
+            .expect("bandwidth-optimized batch verification should succeed");
+        for i in 0..batch_size {
+            assert_eq!(verified_msgs_bw[i], messages[i]);
         }
     }
 
@@ -567,6 +699,37 @@ mod tests {
         assert!(
             batch_verify(&ek, &cts, &hints, &mut rng).is_none(),
             "should reject corrupted P hint"
+        );
+    }
+
+    #[test]
+    fn fo_rejects_bad_bandwidth_hint() {
+        let mut rng = test_rng();
+        let batch_size = 4;
+        let num_parties = 4;
+        let threshold = 3;
+
+        let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
+
+        let messages: Vec<Vec<u8>> = (0..batch_size)
+            .map(|i| format!("msg {i}").into_bytes())
+            .collect();
+
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
+
+        let pds: Vec<_> = sks[..threshold]
+            .iter()
+            .map(|sk| partial_decrypt(sk, &cts))
+            .collect();
+
+        let pd = combine::<E>(&pds);
+        let (_, mut hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+
+        hints.randomness[0] += <E as Pairing>::ScalarField::from(1u64);
+
+        assert!(
+            batch_verify_bandwidth_optimized(&ek, &cts, &hints, &mut rng).is_none(),
+            "should reject corrupted bandwidth-optimized hint"
         );
     }
 
@@ -645,6 +808,73 @@ mod tests {
             .expect("variable-length messages should verify");
         for i in 0..batch_size {
             assert_eq!(verified[i], messages[i]);
+        }
+    }
+
+    #[test]
+    fn fo_verifiers_agree_on_messages() {
+        let mut rng = test_rng();
+        let batch_size = 8;
+        let num_parties = 8;
+        let threshold = 5;
+
+        let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
+
+        let messages: Vec<Vec<u8>> = (0..batch_size)
+            .map(|i| format!("message number {i}").into_bytes())
+            .collect();
+
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
+        let pds: Vec<_> = sks[..threshold]
+            .iter()
+            .map(|sk| partial_decrypt(sk, &cts))
+            .collect();
+        let pd = combine::<E>(&pds);
+
+        let (_, full_hints) = helper_decrypt(&dk, &pd, &cts);
+        let (_, bw_hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+
+        let full_msgs = batch_verify(&ek, &cts, &full_hints, &mut rng)
+            .expect("verification-optimized hints should verify");
+        let bw_msgs = batch_verify_bandwidth_optimized(&ek, &cts, &bw_hints, &mut rng)
+            .expect("bandwidth-optimized hints should verify");
+
+        assert_eq!(full_msgs, bw_msgs);
+    }
+
+    #[test]
+    fn fo_bandwidth_hint_matches_helper_randomness() {
+        let mut rng = test_rng();
+        let batch_size = 4;
+        let num_parties = 4;
+        let threshold = 3;
+
+        let (ek, dk, sks) = setup::<E>(batch_size, num_parties, threshold, &mut rng);
+
+        let messages: Vec<Vec<u8>> = (0..batch_size)
+            .map(|i| format!("msg {i}").into_bytes())
+            .collect();
+
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
+        let pds: Vec<_> = sks[..threshold]
+            .iter()
+            .map(|sk| partial_decrypt(sk, &cts))
+            .collect();
+        let pd = combine::<E>(&pds);
+
+        let (_, full_hints) = helper_decrypt(&dk, &pd, &cts);
+        let (_, bw_hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+
+        for i in 0..batch_size {
+            let expected = h_r::<E>(&full_hints.keys[i], &messages[i]);
+            assert_eq!(bw_hints.randomness[i], expected);
+
+            let reconstructed = ek.e * bw_hints.randomness[i];
+            assert_eq!(reconstructed, full_hints.pairing_values[i]);
+            assert_eq!(
+                (<E as Pairing>::G1::generator() * bw_hints.randomness[i]).into_affine(),
+                cts[i].ct0
+            );
         }
     }
 }
