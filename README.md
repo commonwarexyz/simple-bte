@@ -1,7 +1,5 @@
 # A Simple Batched Threshold Encryption Scheme
 
-A Rust implementation of [A Simple Batched Threshold Encryption Scheme](https://eprint.iacr.org/2026/760).
-
 ## Usage
 
 ```bash
