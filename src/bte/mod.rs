@@ -7,6 +7,7 @@ use merlin::Transcript;
 pub mod crs;
 pub mod decryption;
 pub mod encryption;
+pub mod fo;
 
 /// Encryption key: published for anyone to encrypt.
 #[derive(Clone, Debug)]
@@ -97,7 +98,10 @@ pub(crate) fn append_canonical<T: CanonicalSerialize>(
     transcript.append_message(label, &bytes);
 }
 
-fn transcript_challenge<E: Pairing>(transcript: &mut Transcript, label: &'static [u8]) -> E::ScalarField {
+fn transcript_challenge<E: Pairing>(
+    transcript: &mut Transcript,
+    label: &'static [u8],
+) -> E::ScalarField {
     let mut bytes = [0u8; 64];
     transcript.challenge_bytes(label, &mut bytes);
     E::ScalarField::from_le_bytes_mod_order(&bytes)
