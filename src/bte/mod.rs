@@ -22,6 +22,10 @@ pub struct DecryptionKey<E: Pairing> {
     pub batch_size: usize,
     pub num_parties: usize,
     pub threshold: usize,
+    /// powers_of_h_affine[j] is [tau^j]_2 for j = 0, ..., 2B.
+    /// Slot B+1 is the identity. Stored before pairing preparation so callers
+    /// can perform G2 MSMs/FFTs without recomputing setup material.
+    pub powers_of_h_affine: Vec<E::G2Affine>,
     /// powers_of_h[j] is the prepared form of [tau^j]_2 for j = 0, ..., 2B.
     /// Slot B+1 is the identity.
     pub powers_of_h: Vec<E::G2Prepared>,

@@ -104,6 +104,7 @@ pub fn setup<E: Pairing>(
         batch_size: b,
         num_parties,
         threshold,
+        powers_of_h_affine: h_affine,
         powers_of_h,
         verification_keys,
         fft_size,

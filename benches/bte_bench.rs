@@ -1,8 +1,11 @@
 use ark_bls12_381::Bls12_381;
 use ark_ec::pairing::{Pairing, PairingOutput};
-use ark_ec::PrimeGroup;
-use ark_std::{test_rng, UniformRand};
+use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
+use ark_ff::Zero;
+use ark_poly::EvaluationDomain;
+use ark_std::{rand::Rng, test_rng, UniformRand};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use simple_batched_threshold_encryption::bte::decryption::{decrypt, decrypt_fft};
 use simple_batched_threshold_encryption::bte::{
     crs::setup,
     decryption::{combine, finalize_decrypt, partial_decrypt, predecrypt_fft, verify},
@@ -104,6 +107,71 @@ fn make_fo_context(batch_size: usize, num_parties: usize, threshold: usize) -> F
     }
 }
 
+fn naive_s_fft_kernel(ctx: &BenchContext) -> Vec<<E as Pairing>::G2> {
+    let b = ctx.dk.batch_size;
+    let n = ctx.dk.fft_size;
+
+    // h_vec[d] = h_{B+1+d}, encoded modulo n, so convolution with r gives
+    // S_ell = sum_i r_i * h_{ell+B+1-i} for every ell.
+    let mut h_vec = vec![<E as Pairing>::G2::zero(); n];
+    h_vec[0] = ctx.dk.powers_of_h_affine[b + 1].into_group();
+    for d in 1..b {
+        h_vec[d] = ctx.dk.powers_of_h_affine[b + 1 + d].into_group();
+        h_vec[n - d] = ctx.dk.powers_of_h_affine[b + 1 - d].into_group();
+    }
+
+    ctx.dk.fft_domain.fft_in_place(&mut h_vec);
+    h_vec
+}
+
+fn compute_naive_s_fft(
+    dk: &DecryptionKey<E>,
+    h_hat: &[<E as Pairing>::G2],
+    r: &[Fr],
+) -> Vec<<E as Pairing>::G2Affine> {
+    let b = dk.batch_size;
+    let n = dk.fft_size;
+    assert_eq!(r.len(), b);
+
+    let mut r_hat = r.to_vec();
+    r_hat.resize(n, Fr::zero());
+    dk.fft_domain.fft_in_place(&mut r_hat);
+
+    let mut s_hat = h_hat.to_vec();
+    for (s, r_i) in s_hat.iter_mut().zip(r_hat) {
+        *s *= r_i;
+    }
+
+    dk.fft_domain.ifft_in_place(&mut s_hat);
+
+    <E as Pairing>::G2::normalize_batch(&s_hat[..b])
+}
+
+fn naive_batch_verify_decryption(
+    ctx: &BenchContext,
+    h_hat: &[<E as Pairing>::G2],
+    rng: &mut impl Rng,
+) -> bool {
+    let b = ctx.cts.len();
+
+    let r: Vec<Fr> = (0..b).map(|_| Fr::rand(rng)).collect();
+
+    let mut lhs = PairingOutput::<E>::zero();
+    for i in 0..b {
+        lhs += (ctx.cts[i].ct2 - ctx.messages[i]) * r[i];
+    }
+
+    let pd_bases: Vec<_> = (0..b).map(|i| ctx.dk.powers_of_h_affine[b - i]).collect();
+    let pd_term_g2 = <E as Pairing>::G2::msm(&pd_bases, &r).unwrap();
+    let pd_term = E::pairing(ctx.combined_pd, pd_term_g2.into_affine());
+
+    let s_values = compute_naive_s_fft(&ctx.dk, h_hat, &r);
+
+    let cross = E::multi_pairing(ctx.cts.iter().map(|ct| ct.ct1), s_values);
+
+    lhs == pd_term - cross
+}
+
 fn bench_encrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("encrypt");
     group.sample_size(10);
@@ -165,15 +233,15 @@ fn bench_decrypt_naive_vs_fft(c: &mut Criterion) {
     for &b in &[8, 32, 128, 512, 2048] {
         let ctx = make_context(b, 100, 50);
 
-        // group.bench_with_input(BenchmarkId::new("naive", b), &b, |bench, _| {
-        //     let mut rng = test_rng();
-        //     bench.iter(|| decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
-        // });
+        group.bench_with_input(BenchmarkId::new("naive", b), &b, |bench, _| {
+            let mut rng = test_rng();
+            bench.iter(|| decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
+        });
 
-        // group.bench_with_input(BenchmarkId::new("fft", b), &b, |bench, _| {
-        //     let mut rng = test_rng();
-        //     bench.iter(|| decrypt_fft(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
-        // });
+        group.bench_with_input(BenchmarkId::new("fft", b), &b, |bench, _| {
+            let mut rng = test_rng();
+            bench.iter(|| decrypt_fft(&ctx.dk, &ctx.combined_pd, &ctx.cts, &mut rng));
+        });
 
         group.bench_with_input(BenchmarkId::new("predecrypt", b), &b, |bench, _| {
             bench.iter(|| predecrypt_fft(&ctx.dk, &ctx.cts));
@@ -182,6 +250,24 @@ fn bench_decrypt_naive_vs_fft(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("finalize", b), &b, |bench, _| {
             let cross = predecrypt_fft(&ctx.dk, &ctx.cts);
             bench.iter(|| finalize_decrypt(&ctx.dk, &ctx.combined_pd, &ctx.cts, &cross));
+        });
+    }
+    group.finish();
+}
+
+fn bench_naive_batch_verify_decryption(c: &mut Criterion) {
+    let mut group = c.benchmark_group("naive_batch_verify_decryption");
+    group.sample_size(10);
+
+    for &b in &[8, 32, 128, 512, 2048] {
+        let ctx = make_context(b, 100, 50);
+        let h_hat = naive_s_fft_kernel(&ctx);
+
+        group.bench_with_input(BenchmarkId::from_parameter(b), &b, |bench, _| {
+            let mut rng = test_rng();
+            bench.iter(|| {
+                assert!(naive_batch_verify_decryption(&ctx, &h_hat, &mut rng));
+            });
         });
     }
     group.finish();
@@ -260,5 +346,6 @@ criterion_group!(
         bench_fo_helper_decrypt,
         bench_fo_batch_verify,
         bench_fo_batch_verify_bandwidth_optimized,
+        bench_naive_batch_verify_decryption,
 );
 criterion_main!(benches);
