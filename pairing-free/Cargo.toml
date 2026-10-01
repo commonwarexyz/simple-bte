@@ -1,0 +1,28 @@
+[package]
+name = "pairing_free_bte"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ark-ec = "0.6"
+ark-ff = "0.6"
+ark-pallas = "0.6"
+ark-poly = "0.6"
+ark-serialize = "0.6"
+ark-std = "0.6"
+ark-vesta = "0.6"
+merlin = "3"
+rand = "0.9"
+
+[dev-dependencies]
+ark-bls12-381 = "0.6"
+criterion = { version = "0.5", features = ["html_reports"] }
+simple-batched-threshold-encryption = { path = ".." }
+
+[[bench]]
+name = "curves"
+harness = false
+
+[[bench]]
+name = "compare"
+harness = false
