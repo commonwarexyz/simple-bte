@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use ark_ec::PrimeGroup;
     use ark_pallas::{Fr, PallasConfig, Projective as G};
-    use ark_std::{test_rng, UniformRand};
+    use ark_std::{UniformRand, test_rng};
 
     #[test]
     fn glv_matches_default_mul() {
@@ -153,7 +153,10 @@ mod tests {
         }
         let points: Vec<G> = (0..50).map(|_| G::rand(&mut rng)).collect();
         let ks: Vec<Fr> = (0..50).map(|_| Fr::rand(&mut rng)).collect();
-        let gs: Vec<GlvScalar> = ks.iter().map(|&k| GlvScalar::new::<PallasConfig>(k)).collect();
+        let gs: Vec<GlvScalar> = ks
+            .iter()
+            .map(|&k| GlvScalar::new::<PallasConfig>(k))
+            .collect();
         let mut pts = points.clone();
         pts[3] = G::zero();
         let refs: Vec<&GlvScalar> = gs.iter().collect();

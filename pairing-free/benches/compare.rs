@@ -16,11 +16,11 @@ use ark_pallas::PallasConfig;
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_std::rand::seq::SliceRandom;
 use ark_std::test_rng;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use pairing_free_bte::params::Params;
 use pairing_free_bte::scheme::{
-    combine, combine_fft, combine_lagrange, decrypt, encrypt, partial_decrypt, prepare_batch, setup,
-    Ciphertext, CombineContext, PartialDecryption, PreparedBatch, QuorumKey, Scalar,
+    Ciphertext, CombineContext, PartialDecryption, PreparedBatch, QuorumKey, Scalar, combine,
+    combine_fft, combine_lagrange, decrypt, encrypt, partial_decrypt, prepare_batch, setup,
 };
 use simple_batched_threshold_encryption::bte as sbte;
 use std::time::Duration;

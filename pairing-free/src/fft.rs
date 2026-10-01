@@ -1,6 +1,6 @@
 //! Radix-2 FFT over curve points with precomputed GLV twiddles.
 
-use crate::glv::{glv_mul_batch, GlvScalar};
+use crate::glv::{GlvScalar, glv_mul_batch};
 use ark_ec::scalar_mul::glv::GLVConfig;
 use ark_ec::short_weierstrass::Projective;
 use ark_ff::{Field, Zero};
@@ -93,7 +93,7 @@ mod tests {
     use super::*;
     use ark_ff::FftField;
     use ark_pallas::{Fr, PallasConfig, Projective as G};
-    use ark_std::{test_rng, UniformRand};
+    use ark_std::{UniformRand, test_rng};
 
     #[test]
     fn matches_naive_dft() {

@@ -6,15 +6,15 @@
 //! `PartVerify`.
 
 use crate::fft::GroupFft;
-use crate::glv::{glv_mul_batch, GlvScalar};
+use crate::glv::{GlvScalar, glv_mul_batch};
 use crate::params::Params;
 use ark_ec::scalar_mul::glv::GLVConfig;
 use ark_ec::short_weierstrass::{Affine, Projective, SWCurveConfig};
 use ark_ec::{AffineRepr, CurveConfig, CurveGroup, PrimeGroup, VariableBaseMSM};
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
-use ark_std::rand::Rng;
 use ark_std::UniformRand;
+use ark_std::rand::Rng;
 use merlin::Transcript;
 
 pub type Scalar<P> = <P as CurveConfig>::ScalarField;
@@ -165,7 +165,8 @@ pub fn prepare_batch<P: SWCurveConfig>(
         bases.push(ct.c1);
         scalars.push(w * e);
     }
-    let all_ok = Projective::<P>::generator() * lhs == Projective::<P>::msm(&bases, &scalars).unwrap();
+    let all_ok =
+        Projective::<P>::generator() * lhs == Projective::<P>::msm(&bases, &scalars).unwrap();
 
     let valid: Vec<bool> = if all_ok {
         vec![true; cts.len()]

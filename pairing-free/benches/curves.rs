@@ -5,9 +5,9 @@ use ark_ec::short_weierstrass::{Affine, Projective};
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use ark_ff::{FftField, UniformRand};
 use ark_std::test_rng;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use pairing_free_bte::fft::GroupFft;
-use pairing_free_bte::glv::{glv_mul, GlvScalar};
+use pairing_free_bte::glv::{GlvScalar, glv_mul};
 use std::time::Duration;
 
 fn bench_curve<P: GLVConfig>(c: &mut Criterion, name: &str) {
