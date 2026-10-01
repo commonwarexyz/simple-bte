@@ -27,3 +27,7 @@ harness = false
 
 [profile.dev]
 opt-level = 3
+
+[[bench]]
+name = "packed_bench"
+harness = false

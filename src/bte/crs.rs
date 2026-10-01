@@ -20,25 +20,8 @@ pub fn setup<E: Pairing>(
         "threshold must be in [1, N]"
     );
     let b = batch_size;
-
-    // -- powers of tau ---------------------------------------------------
     let tau = E::ScalarField::rand(rng);
-    let mut tau_powers = Vec::with_capacity(2 * b + 1);
-    tau_powers.push(E::ScalarField::one());
-    for i in 1..=2 * b {
-        tau_powers.push(tau_powers[i - 1] * tau);
-    }
-
-    // Group elements: zero out the B+1 slot so h_{B+1} = 0.
-    let mut tau_for_groups = tau_powers.clone();
-    tau_for_groups[b + 1] = E::ScalarField::zero();
-
-    let g_affine = E::G1::generator().batch_mul(&tau_for_groups);
-    let h_affine = E::G2::generator().batch_mul(&tau_for_groups);
-    let powers_of_h: Vec<E::G2Prepared> = h_affine.iter().cloned().map(Into::into).collect();
-
-    // [tau^{B+1}]_T = e([tau^B]_1, [tau]_2)
-    let e = E::pairing(g_affine[b], h_affine[1]);
+    let (ek, mut dk, tau_powers) = public_keys::<E>(tau, b, num_parties, threshold);
 
     // -- Shamir secret sharing --------------------------------------------
     // For each slot i in {1,...,B} we share tau^i among N parties with threshold t.
@@ -69,6 +52,39 @@ pub fn setup<E: Pairing>(
             party_index: j + 1,
         })
         .collect();
+
+    dk.verification_keys = verification_keys;
+
+    (ek, dk, secret_keys)
+}
+
+/// Everything in the keys that depends only on tau and the batch size: the
+/// powers of h (slot B+1 zeroed), the FFT kernel for `predecrypt_fft`, and
+/// [tau^{B+1}]_T. Returns `verification_keys` empty, plus the powers
+/// tau^0, ..., tau^{2B} for the caller's secret sharing.
+pub(crate) fn public_keys<E: Pairing>(
+    tau: E::ScalarField,
+    b: usize,
+    num_parties: usize,
+    threshold: usize,
+) -> (EncryptionKey<E>, DecryptionKey<E>, Vec<E::ScalarField>) {
+    // -- powers of tau ---------------------------------------------------
+    let mut tau_powers = Vec::with_capacity(2 * b + 1);
+    tau_powers.push(E::ScalarField::one());
+    for i in 1..=2 * b {
+        tau_powers.push(tau_powers[i - 1] * tau);
+    }
+
+    // Group elements: zero out the B+1 slot so h_{B+1} = 0.
+    let mut tau_for_groups = tau_powers.clone();
+    tau_for_groups[b + 1] = E::ScalarField::zero();
+
+    let h_affine = E::G2::generator().batch_mul(&tau_for_groups);
+    let powers_of_h: Vec<E::G2Prepared> = h_affine.iter().cloned().map(Into::into).collect();
+
+    // [tau^{B+1}]_T = e([tau^B]_1, [tau]_2)
+    let g_b = (E::G1::generator() * tau_powers[b]).into_affine();
+    let e = E::pairing(g_b, h_affine[1]);
 
     // -- FFT precomputation for decrypt_fft ---------------------------------
     //
@@ -106,13 +122,13 @@ pub fn setup<E: Pairing>(
         threshold,
         powers_of_h_affine: h_affine,
         powers_of_h,
-        verification_keys,
+        verification_keys: Vec::new(),
         fft_size,
         fft_domain,
         fft_h,
     };
 
-    (EncryptionKey { e }, dk, secret_keys)
+    (EncryptionKey { e }, dk, tau_powers)
 }
 
 /// Evaluate polynomial `coeffs[0] + coeffs[1]*x + ...` at `x`.

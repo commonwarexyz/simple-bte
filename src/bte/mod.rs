@@ -8,6 +8,7 @@ pub mod crs;
 pub mod decryption;
 pub mod encryption;
 pub mod fo;
+pub mod packed;
 
 /// Encryption key: published for anyone to encrypt.
 #[derive(Clone, Debug)]
