@@ -259,12 +259,23 @@ pub fn partial_decrypt<E: Pairing>(
 /// Verify a partial decryption share against the public verification keys.
 ///
 /// Checks e(pd_j, g_2) = sum_i e(ct_{i,0}, v^i_j).
+///
+/// Never panics on attacker-controlled input: malformed shares or misleading
+/// batch sizes yield `false` instead of an out-of-bounds panic (DoS).
 pub fn verify_partial_decryption<E: Pairing>(
     dk: &DecryptionKey<E>,
     pd: &PartialDecryption<E>,
     cts: &[FoCiphertext<E>],
 ) -> bool {
-    assert_eq!(cts.len(), dk.batch_size);
+    if cts.len() != dk.batch_size {
+        return false;
+    }
+    // The share index is 1-based and must address a registered party;
+    // `party_index - 1` underflows for index 0 and reads out of bounds for
+    // any index above the number of parties.
+    if pd.party_index == 0 || pd.party_index > dk.num_parties {
+        return false;
+    }
     let party_idx = pd.party_index - 1;
     let lhs = E::pairing(pd.value, E::G2::generator());
     let rhs = E::multi_pairing(
@@ -410,8 +421,11 @@ pub fn batch_verify<E: Pairing>(
     rng: &mut impl Rng,
 ) -> Option<Vec<Vec<u8>>> {
     let b = cts.len();
-    assert_eq!(hints.keys.len(), b);
-    assert_eq!(hints.pairing_values.len(), b);
+    // Hint vectors must align with the ciphertext batch; a length mismatch is
+    // a verification failure, not a panic condition.
+    if hints.keys.len() != b || hints.pairing_values.len() != b {
+        return None;
+    }
 
     // Step 1: Per-ciphertext consistency -- ct_{i,1} == H_K(P_i) xor K_i.
     // Cheapest check; done first for early exit on trivially bad hints.
@@ -477,7 +491,11 @@ pub fn batch_verify_bandwidth_optimized<E: Pairing>(
     rng: &mut impl Rng,
 ) -> Option<Vec<Vec<u8>>> {
     let b = cts.len();
-    assert_eq!(hints.randomness.len(), b);
+    // Hint vectors must align with the ciphertext batch; a length mismatch is
+    // a verification failure, not a panic condition.
+    if hints.randomness.len() != b {
+        return None;
+    }
 
     let mut messages = Vec::with_capacity(b);
 
@@ -557,7 +575,7 @@ mod tests {
             );
         }
 
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let (helper_msgs, hints) = helper_decrypt(&dk, &pd, &cts);
         for i in 0..batch_size {
@@ -613,7 +631,7 @@ mod tests {
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
 
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let cross = predecrypt_fft(&dk, &cts);
         let (helper_msgs, hints) = helper_finalize(&dk, &pd, &cts, &cross);
@@ -660,7 +678,7 @@ mod tests {
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
 
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
         let (_, mut hints) = helper_decrypt(&dk, &pd, &cts);
 
         hints.keys[0][0] ^= 0xff;
@@ -691,7 +709,7 @@ mod tests {
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
 
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
         let (_, mut hints) = helper_decrypt(&dk, &pd, &cts);
 
         hints.pairing_values[1] += PairingOutput::<E>::generator();
@@ -722,7 +740,7 @@ mod tests {
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
 
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
         let (_, mut hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
 
         hints.randomness[0] += <E as Pairing>::ScalarField::from(1u64);
@@ -758,6 +776,60 @@ mod tests {
     }
 
     #[test]
+    fn fo_verify_rejects_out_of_range_party_index() {
+        let mut rng = test_rng();
+        let (ek, dk, sks) = setup::<E>(4, 4, 3, &mut rng);
+
+        let messages: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 10]).collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
+
+        let real_pd = partial_decrypt(&sks[0], &cts);
+
+        // party_index = 0 would underflow to usize::MAX in the old code.
+        let zero_pd = PartialDecryption {
+            value: real_pd.value,
+            party_index: 0,
+        };
+        assert!(!verify_partial_decryption(&dk, &zero_pd, &cts));
+
+        // party_index beyond the registered party count read out of bounds.
+        let bogus_pd = PartialDecryption {
+            value: real_pd.value,
+            party_index: 5,
+        };
+        assert!(!verify_partial_decryption(&dk, &bogus_pd, &cts));
+
+        // Mismatched batch length must verify false, not panic.
+        assert!(!verify_partial_decryption(&dk, &real_pd, &cts[..3]));
+    }
+
+    #[test]
+    fn fo_batch_verify_rejects_hint_length_mismatch() {
+        let mut rng = test_rng();
+        let (ek, dk, sks) = setup::<E>(4, 4, 3, &mut rng);
+
+        let messages: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 10]).collect();
+        let cts: Vec<_> = messages.iter().map(|m| encrypt(&ek, m, &mut rng)).collect();
+
+        let pds: Vec<_> = sks[..3].iter().map(|sk| partial_decrypt(sk, &cts)).collect();
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
+        let (_, mut hints) = helper_decrypt(&dk, &pd, &cts);
+        let (_, mut hints_bw) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
+
+        // Truncated hint vectors must yield None instead of panicking.
+        hints.keys.pop();
+        assert!(
+            batch_verify(&ek, &cts, &hints, &mut rng).is_none(),
+            "should reject truncated key hints"
+        );
+        hints_bw.randomness.pop();
+        assert!(
+            batch_verify_bandwidth_optimized(&ek, &cts, &hints_bw, &mut rng).is_none(),
+            "should reject truncated bandwidth hints"
+        );
+    }
+
+    #[test]
     fn fo_empty_messages() {
         let mut rng = test_rng();
         let batch_size = 4;
@@ -774,7 +846,7 @@ mod tests {
             .iter()
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let (_, hints) = helper_decrypt(&dk, &pd, &cts);
         let verified =
@@ -801,7 +873,7 @@ mod tests {
             .iter()
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let (_, hints) = helper_decrypt(&dk, &pd, &cts);
         let verified = batch_verify(&ek, &cts, &hints, &mut rng)
@@ -829,7 +901,7 @@ mod tests {
             .iter()
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let (_, full_hints) = helper_decrypt(&dk, &pd, &cts);
         let (_, bw_hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
@@ -860,7 +932,7 @@ mod tests {
             .iter()
             .map(|sk| partial_decrypt(sk, &cts))
             .collect();
-        let pd = combine::<E>(&pds);
+        let pd = combine::<E>(&pds).expect("valid distinct shares");
 
         let (_, full_hints) = helper_decrypt(&dk, &pd, &cts);
         let (_, bw_hints) = helper_decrypt_bandwidth_optimized(&dk, &pd, &cts);
